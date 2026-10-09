@@ -1,0 +1,6 @@
+# Written by Claude Code each time it loads the mod
+.claude-plugin/types/
+tsconfig.json
+
+.DS_Store
+node_modules/

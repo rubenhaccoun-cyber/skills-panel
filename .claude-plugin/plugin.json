@@ -1,0 +1,38 @@
+{
+  "name": "skills-panel",
+  "version": "0.2.0",
+  "description": "A live pane that shows which skills are active, which ones fit your prompt (scored 1 to 10), and which ones you actually use.",
+  "author": { "name": "Ruben Haccoun", "url": "https://github.com/rubenhaccoun-cyber" },
+  "homepage": "https://github.com/rubenhaccoun-cyber/skills-panel",
+  "repository": "https://github.com/rubenhaccoun-cyber/skills-panel",
+  "license": "MIT",
+  "keywords": ["skills", "mod", "pane", "recommendations", "productivity"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "language": {
+      "type": "string",
+      "title": "Language",
+      "description": "Language of the pane and of the reasons given for each suggestion.",
+      "default": "en",
+      "options": ["en", "fr"]
+    },
+    "contextMinScore": {
+      "type": "number",
+      "title": "Minimum score shared with Claude",
+      "description": "Suggestions at or above this score (1 to 10) are passed to Claude with your prompt.",
+      "default": 7
+    },
+    "maxSuggestions": {
+      "type": "number",
+      "title": "Maximum suggestions",
+      "description": "How many suggested skills the pane shows at most.",
+      "default": 10
+    },
+    "shareWithClaude": {
+      "type": "boolean",
+      "title": "Share suggestions with Claude",
+      "description": "Off: the pane still shows suggestions, but Claude does not receive them.",
+      "default": true
+    }
+  }
+}

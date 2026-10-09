@@ -1,0 +1,12 @@
+{
+  "name": "skills-panel",
+  "owner": { "name": "Ruben Haccoun", "url": "https://github.com/rubenhaccoun-cyber" },
+  "description": "skills-panel, a Claude Code mod that suggests the right skill before Claude answers.",
+  "plugins": [
+    {
+      "name": "skills-panel",
+      "source": "./",
+      "description": "A live pane that shows which skills are active, which ones fit your prompt (scored 1 to 10), and which ones you actually use."
+    }
+  ]
+}
