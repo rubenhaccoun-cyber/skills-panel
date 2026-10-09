@@ -34,6 +34,8 @@ Suggested ranks the skills that fit your last prompt, scored from 1 to 10, each 
 
 Discover lists popular skills you haven't installed, found on [skills.sh](https://skills.sh) for the same prompt: name, repository and install count, 1,000 installs at least. Click one and its install command (`npx skills add owner/repo@skill -g -y`) is added to the prompt; send it and Claude installs it. The tab shows how many it found, so you know there is something to look at without leaving Suggested.
 
+![The Discover tab listing a skill not installed, with its repository and install count](docs/discover.png)
+
 Top used shows what you actually reach for, in this project or across all of them, filterable by tag (SEO, Writing, Design, Dev, Workflow and a few more).
 
 The pane remembers the last tab you opened.
