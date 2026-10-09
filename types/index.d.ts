@@ -1,6 +1,7 @@
 export type ActiveSkill = { name: string; count: number }
 export type Suggestion = { name: string; why: string; score: number; tag: string; isRule: boolean }
 export type TopSkill = { name: string; count: number; tag: string }
+export type Found = { name: string; source: string; installs: number }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -15,6 +16,9 @@ declare module 'claude-code' {
       tagFilter: string
       ruleNote: string
       cacheNote: string
+      found: Found[]
+      foundQuery: string
+      tab: string
     }
   }
 }

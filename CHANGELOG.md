@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0 - 2026-10-10
+
+- Tabs below Active: Suggested, Discover and Top used. The pane remembers the last one.
+- Discover tab: popular skills you have not installed, from the skills.sh search, 1,000 installs at least. Clicking one adds its install command to the prompt.
+- The search runs after the prompt has gone on, so Claude never waits for it. Only 2 to 4 keywords are sent, never the prompt.
+- New `discover` setting to turn it off.
+- Top used shows up to 10 skills, now that it has a tab of its own.
+- Tags use fixed colors with white text, readable in the terminal and in the desktop app.
+
 ## 0.2.0 - 2026-10-09
 
 First public release.

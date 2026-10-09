@@ -1,6 +1,17 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { adjust, parseNames, parsePicks, parseSkillMd, projectRules, shortlist, tagOf, tokenize } from '../hooks/skills'
+import {
+  adjust,
+  parseFound,
+  parseNames,
+  parsePicks,
+  parseSearch,
+  parseSkillMd,
+  projectRules,
+  shortlist,
+  tagOf,
+  tokenize,
+} from '../hooks/skills'
 
 const SKILLS = [
   { name: 'stripe-integration', description: 'Integrate Stripe payments, checkout and webhooks' },
@@ -64,6 +75,28 @@ test('parseNames keeps known names in order, up to the limit', () => {
   ])
   expect(parseNames('["seo-audit","stripe-integration"]', byName, 1).map(skill => skill.name)).toEqual(['seo-audit'])
   expect(parseNames('none', byName, 5)).toEqual([])
+})
+
+test('parseSearch reads the registry keywords from the scoring reply', () => {
+  expect(parseSearch('{"search": " product reviews schema ", "picks": []}')).toEqual('product reviews schema')
+  expect(parseSearch('[{"name":"seo-audit","score":4,"why":"x"}]')).toEqual('')
+})
+
+test('parseFound keeps popular skills not installed, most installed first', () => {
+  const body = JSON.stringify({
+    skills: [
+      { id: 'a/b/schema', source: 'a/b', skillId: 'schema', name: 'schema', installs: 69666 },
+      { id: 'c/d/schema', source: 'c/d', skillId: 'schema', name: 'schema', installs: 605 },
+      { id: 'e/f/seo-audit', source: 'e/f', skillId: 'seo-audit', name: 'seo-audit', installs: 9000 },
+      { id: 'g/h/reviews', source: 'g/h', skillId: 'reviews', name: 'Review Widgets', installs: 1200 },
+      { id: 'i/j/tiny', source: 'i/j', skillId: 'tiny', name: 'tiny', installs: 40 },
+    ],
+  })
+  expect(parseFound(body, ['claude-seo:seo-audit'])).toEqual([
+    { name: 'schema', source: 'a/b', installs: 69666 },
+    { name: 'Review Widgets', source: 'g/h', installs: 1200 },
+  ])
+  expect(parseFound('not json', [])).toEqual([])
 })
 
 test('tagOf puts each skill in one tag', () => {
@@ -199,6 +232,7 @@ test('the pane lists loaded skills and the top used with tags', async ($, on) =>
       props: PANE_PROPS,
     })
     expect(await ui.find({ type: 'Text', text: /^x2$/ })).toBeDefined()
+    await ui.press({ key: 'tab-top' })
     expect(await ui.find({ key: 'tag-seo' })).toBeDefined()
     await ui.press({ key: 'tag-seo' })
     expect(await ui.find({ type: 'Text', text: 'seo-audit' })).toBeDefined()
@@ -212,7 +246,8 @@ test('the pane lists loaded skills and the top used with tags', async ($, on) =>
   }
 })
 
-test('the pane speaks French when language is fr', { options: { language: 'fr' } }, async $ => {
+test('the pane speaks French when language is fr', { options: { language: 'fr' } }, async ($, on) => {
+  mock.store(on)
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({
       plugin: 'skills-panel',
@@ -223,6 +258,8 @@ test('the pane speaks French when language is fr', { options: { language: 'fr' }
     })
     expect(await ui.find({ type: 'Text', text: 'Actifs' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'Aucun skill chargé dans cette session.' })).toBeDefined()
+    expect(await ui.find({ key: 'tab-discover' })).toBeDefined()
+    await ui.press({ key: 'tab-top' })
     expect(await ui.find({ key: 'scope-all' })).toBeDefined()
     await ui.unmount()
   }
@@ -276,4 +313,113 @@ test('clicking a suggestion appends it after the text already typed', async ($, 
   await ui.press({ key: 'use-seo-images' })
   expect(filled).toEqual(['optimise les images /seo-images ', '/seo-images '])
   await ui.unmount()
+})
+
+test('the Discover tab lists registry skills after the prompt has gone on', async ($, on) => {
+  const order: string[] = []
+  const urls: string[] = []
+  const filled: string[] = []
+  mock.store(on)
+  const clock = mock.clock(on)
+  mock.env(on, { HOME: '/home/test' })
+  on('session.root', () => ({ value: '/work/demo' }))
+  on('fs.ancestors', () => ({ value: [] }))
+  on('fs.exists', (_, e) => ({ value: e.path === '/home/test/.claude/skills' }))
+  on('fs.list', () => ({ value: [{ name: 'seo-images', kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false }] }))
+  on('fs.read', (_, e) =>
+    e.path.endsWith('SKILL.md')
+      ? { value: '---\nname: seo-images\ndescription: Optimize images for SEO\n---' }
+      : { deny: 'missing' },
+  )
+  on('session.messages', () => ({ value: [] }))
+  on('model.complete', (_, e) => ({
+    value: {
+      isAnswered: true as const,
+      text: e.prompt.includes('Candidate skills')
+        ? '{"search": "product reviews", "picks": [{"name":"seo-images","score":8,"why":"images"}]}'
+        : '["seo-images"]',
+      usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    },
+  }))
+  on('http.fetch', (_, e) => {
+    order.push('fetch')
+    urls.push(e.url)
+    const skills = [
+      { id: 'a/b/reviews', source: 'a/b', skillId: 'reviews', name: 'reviews', installs: 4200 },
+      { id: 'c/d/seo-images', source: 'c/d', skillId: 'seo-images', name: 'seo-images', installs: 9000 },
+    ]
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ skills }) } }
+  })
+  on('prompt.submit', (_, e) => {
+    order.push('submit')
+    return { text: e.text }
+  })
+  on('prompt.read', () => ({ value: { text: '', cursor: 0 } }))
+  on('prompt.fill', (_, e) => {
+    filled.push(e.text)
+    return { isFilled: true }
+  })
+  await $.command.run({
+    command: 'skills-rescan',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 120 },
+  })
+  await $.prompt.submit({ text: 'show the reviews from the old site', wait: false, origin: { kind: 'composer' } })
+  await clock.advance(1)
+  expect(order).toEqual(['submit', 'fetch'])
+  expect(urls).toEqual(['https://skills.sh/api/search?q=product%20reviews&limit=20'])
+
+  const ui = await $.ui.mount({
+    plugin: 'skills-panel',
+    surface: 'desktop',
+    component: 'Pane',
+    requestId: 'skills-panel',
+    props: PANE_PROPS,
+  })
+  expect(await ui.find({ key: 'tab-discover', text: 'Discover 1' })).toBeDefined()
+  await ui.press({ key: 'tab-discover' })
+  expect(await ui.find({ key: 'add-seo-images' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'a/b, 4.2K installs' })).toBeDefined()
+  await ui.press({ key: 'add-reviews' })
+  expect(filled).toEqual(['npx skills add a/b@reviews -g -y '])
+  await ui.unmount()
+})
+
+test('discovery off sends nothing to the registry', { options: { discover: false } }, async ($, on) => {
+  let fetches = 0
+  mock.store(on)
+  const clock = mock.clock(on)
+  mock.env(on, { HOME: '/home/test' })
+  on('session.root', () => ({ value: '/work/demo' }))
+  on('fs.ancestors', () => ({ value: [] }))
+  on('fs.exists', (_, e) => ({ value: e.path === '/home/test/.claude/skills' }))
+  on('fs.list', () => ({ value: [{ name: 'seo-images', kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false }] }))
+  on('fs.read', (_, e) =>
+    e.path.endsWith('SKILL.md')
+      ? { value: '---\nname: seo-images\ndescription: Optimize images for SEO\n---' }
+      : { deny: 'missing' },
+  )
+  on('session.messages', () => ({ value: [] }))
+  on('model.complete', () => ({
+    value: {
+      isAnswered: true as const,
+      text: '{"search": "images", "picks": [{"name":"seo-images","score":8,"why":"images"}]}',
+      usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    },
+  }))
+  on('http.fetch', () => {
+    fetches += 1
+    return { value: { status: 200, ok: true, headers: {}, text: '{"skills":[]}' } }
+  })
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+  await $.command.run({
+    command: 'skills-rescan',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 120 },
+  })
+  await $.prompt.submit({ text: 'optimise les images du portfolio', wait: false, origin: { kind: 'composer' } })
+  await clock.advance(1)
+  expect(fetches).toEqual(0)
 })

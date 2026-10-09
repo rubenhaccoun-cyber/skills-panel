@@ -1,6 +1,10 @@
 export type SkillInfo = { name: string; description: string }
 export type RawPick = { name: string; why: string; score: number }
 export type Stat = { used: number; clicked: number; shown: number; last: number }
+export type Found = { name: string; source: string; installs: number }
+
+// find-skills advises against recommending registry skills under 1,000 installs.
+const MIN_INSTALLS = 1000
 
 const STOPWORDS = new Set(
   (
@@ -130,6 +134,35 @@ export function adjust(score: number, stat: Stat | undefined, isRule: boolean): 
   const penalty = stat !== undefined && stat.shown >= 5 && stat.used + stat.clicked === 0 ? 1 : 0
 
   return Math.max(1, Math.min(10, Math.round(score + bonus - penalty + (isRule ? 1 : 0))))
+}
+
+export function parseSearch(reply: string): string {
+  return (/"search"\s*:\s*"([^"]{1,80})"/.exec(reply)?.[1] ?? '').trim()
+}
+
+// skills.sh search results, minus skills already installed and little-used ones, most installed first.
+export function parseFound(body: string, installed: string[], limit = 5): Found[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    return []
+  }
+  const skills = (parsed as { skills?: unknown } | null)?.skills
+  if (!Array.isArray(skills)) return []
+  const have = new Set(installed.map(name => (name.split(':').pop() ?? name).toLowerCase()))
+  const best = new Map<string, Found>()
+  for (const skill of skills) {
+    if (typeof skill?.name !== 'string' || typeof skill?.source !== 'string' || typeof skill?.installs !== 'number') continue
+    const key = skill.name.toLowerCase()
+    const id = typeof skill.skillId === 'string' ? skill.skillId.toLowerCase() : key
+    if (skill.installs < MIN_INSTALLS || have.has(key) || have.has(id)) continue
+    if ((best.get(key)?.installs ?? -1) < skill.installs) {
+      best.set(key, { name: skill.name, source: skill.source, installs: skill.installs })
+    }
+  }
+
+  return [...best.values()].sort((a, b) => b.installs - a.installs).slice(0, limit)
 }
 
 export function parseNames(reply: string, byName: Map<string, SkillInfo>, limit: number): SkillInfo[] {

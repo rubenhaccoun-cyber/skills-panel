@@ -1,10 +1,21 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { ActiveSkill, Suggestion, TopSkill } from '../types'
+import type { ActiveSkill, Found, Suggestion, TopSkill } from '../types'
 import { STRINGS } from './i18n'
 import type { Lang } from './i18n'
-import { adjust, parseNames, parsePicks, parseSkillMd, projectRules, shortlist, tagOf, tokenize } from './skills'
+import {
+  adjust,
+  parseFound,
+  parseNames,
+  parsePicks,
+  parseSearch,
+  parseSkillMd,
+  projectRules,
+  shortlist,
+  tagOf,
+  tokenize,
+} from './skills'
 import type { SkillInfo, Stat } from './skills'
 
 const PANE = 'skills-panel'
@@ -19,6 +30,11 @@ const topScope = atom({ plugin: 'skills-panel', key: 'topScope' } as const, 'pro
 const tagFilter = atom({ plugin: 'skills-panel', key: 'tagFilter' } as const, '')
 const ruleNote = atom({ plugin: 'skills-panel', key: 'ruleNote' } as const, '')
 const cacheNote = atom({ plugin: 'skills-panel', key: 'cacheNote' } as const, '')
+const found = atom({ plugin: 'skills-panel', key: 'found' } as const, [] as Found[])
+const foundQuery = atom({ plugin: 'skills-panel', key: 'foundQuery' } as const, '')
+const tab = atom({ plugin: 'skills-panel', key: 'tab' } as const, 'suggested')
+const TABS = ['suggested', 'discover', 'top']
+const REGISTRY = 'https://skills.sh'
 
 type InstalledPlugins = { plugins?: Record<string, { installPath?: string }[]> }
 type Usage = Record<string, Record<string, Stat>>
@@ -39,7 +55,7 @@ const TAG_COLORS: Record<string, string> = {
 }
 const RULE_COLOR = '#9a6700'
 const ALL_COLOR = '#b4532a'
-const tagColor = (tag: string) => TAG_COLORS[tag] ?? TAG_COLORS.other
+const tagColor = (tag: string) => TAG_COLORS[tag] ?? '#6e7781'
 const scoreColor = (score: number) => (score >= 8 ? 'success' : score >= 5 ? 'warning' : 'subtle')
 const bar = (score: number) => '█'.repeat(score) + '░'.repeat(10 - score)
 const GAUGE_WIDTH = 96
@@ -51,12 +67,20 @@ const gauge = (score: number) =>
   `<rect width="${Math.max(GAUGE_HEIGHT, (GAUGE_WIDTH * score) / 10)}" height="${GAUGE_HEIGHT}" rx="${GAUGE_HEIGHT / 2}" fill="${GAUGE_HEX(score)}"/>` +
   '</svg>'
 const thousands = (count: number) => String(count).replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
+const compact = (count: number) =>
+  count >= 1e6 ? `${(count / 1e6).toFixed(1).replace(/\.0$/, '')}M` : `${(count / 1e3).toFixed(1).replace(/\.0$/, '')}K`
+// The registry's own install syntax; a name with spaces must be quoted.
+const installCommand = (skill: Found) => {
+  const target = `${skill.source}@${skill.name}`
+  return `npx skills add ${/\s/.test(target) ? `"${target}"` : target} -g -y`
+}
 
 // Set from the plugin's userConfig each time the module loads.
 let lang: Lang = 'en'
 let minContextScore = 7
 let maxSuggestions = 10
 let isContextOn = true
+let isDiscoverOn = true
 const t = () => STRINGS[lang]
 const tagLabel = (tag: string) => t().tags[tag] ?? tag
 
@@ -84,9 +108,10 @@ const pickPrompt = (conversation: string, request: string, candidates: SkillInfo
   `\n\nPick up to ${maxSuggestions} skills that would help with this request, most relevant first, ` +
   'including ones that are only moderately useful. ' +
   'Give each a relevance score from 1 (marginal) to 10 (essential). ' +
-  `Answer with a JSON array only: [{"name": "<exact skill name>", "score": <1-10>, "why": "<reason in ${t().reasonLanguage}, 10 words max>"}]. ` +
+  'Answer with a JSON object only: {"search": "<2 to 4 English keywords to look this task up in a public skill registry>", ' +
+  `"picks": [{"name": "<exact skill name>", "score": <1-10>, "why": "<reason in ${t().reasonLanguage}, 10 words max>"}]}. ` +
   JUDGE_INTENT +
-  ' Answer [] if none is clearly relevant.'
+  ' Leave picks empty if none is clearly relevant.'
 
 const contextFor = (picks: Suggestion[], banned: string[]) =>
   `${t().context}\n` +
@@ -161,6 +186,26 @@ async function setScope($: EngineInterface, scope: string) {
   await $.store.set('topScope', scope)
 }
 
+async function setTab($: EngineInterface, value: string) {
+  await update($, tab, () => value)
+  await $.store.set('tab', value)
+}
+
+// Runs after the prompt has gone on, so the registry round trip never delays Claude's answer.
+function lookUp($: EngineInterface, query: string) {
+  if (!isDiscoverOn || query === '') return
+  $.clock.after(0, () => void discover($, query))
+}
+
+async function discover($: EngineInterface, query: string) {
+  await update($, foundQuery, () => query)
+  const response = await $.http
+    .fetch(`${REGISTRY}/api/search?q=${encodeURIComponent(query)}&limit=20`)
+    .catch(() => undefined)
+  const list = response?.ok ? parseFound(response.text, index.map(skill => skill.name)) : []
+  await update($, found, () => list)
+}
+
 async function reindex($: EngineInterface): Promise<number> {
   const home = await $.env.get('HOME')
   const installed = JSON.parse(
@@ -198,6 +243,8 @@ async function reindex($: EngineInterface): Promise<number> {
   )
   const savedScope = await $.store.get('topScope')
   await update($, topScope, () => (savedScope === 'all' ? 'all' : 'project'))
+  const savedTab = await $.store.get('tab')
+  await update($, tab, () => (typeof savedTab === 'string' && TABS.includes(savedTab) ? savedTab : 'suggested'))
   await refreshTop($, await loadUsage($))
   await update($, note, () => t().indexed(index.length))
   return index.length
@@ -237,8 +284,10 @@ async function recommend($: EngineInterface, request: string): Promise<Suggestio
         .map(skill => [skill.name, skill]),
     ).values(),
   ]
+  const fallbackQuery = tokenize(request).slice(0, 4).join(' ')
   if (candidates.length === 0) {
     await settle($, request, [])
+    lookUp($, fallbackQuery)
     return []
   }
   const reply = await $.model.complete({
@@ -255,6 +304,7 @@ async function recommend($: EngineInterface, request: string): Promise<Suggestio
     })
     .sort((a, b) => b.score - a.score)
   await settle($, request, picks)
+  lookUp($, (reply.isAnswered ? parseSearch(reply.text) : '') || fallbackQuery)
   await bump(
     $,
     picks.map(pick => pick.name),
@@ -316,6 +366,7 @@ export const register: Register = (on, options) => {
   minContextScore = typeof options.contextMinScore === 'number' ? options.contextMinScore : 7
   maxSuggestions = typeof options.maxSuggestions === 'number' ? options.maxSuggestions : 10
   isContextOn = options.shareWithClaude !== false
+  isDiscoverOn = options.discover !== false
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'skills-panel', description: t().commandPanel })
@@ -378,17 +429,23 @@ export const register: Register = (on, options) => {
     const filter = await read($, tagFilter)
     const rules = await read($, ruleNote)
     const cache = await read($, cacheNote)
+    const finds = await read($, found)
+    const query = await read($, foundQuery)
+    const view = await read($, tab)
     const tagCounts = ranking.reduce(
       (counts, skill) => counts.set(skill.tag, (counts.get(skill.tag) ?? 0) + skill.count),
       new Map<string, number>(),
     )
-    const shownTop = ranking.filter(skill => filter === '' || skill.tag === filter).slice(0, 5)
+    const shownTop = ranking.filter(skill => filter === '' || skill.tag === filter).slice(0, 10)
     const countWidth = Math.max(1, ...shownTop.map(skill => String(skill.count).length))
-    const insert = async (name: string) => {
-      await bump($, [name], 'clicked')
+    const append = async (addition: string) => {
       const { text } = await $.prompt.read()
       const separator = text === '' || /\s$/.test(text) ? '' : ' '
-      await $.prompt.fill({ text: `${text}${separator}/${name} `, mode: 'replace' })
+      await $.prompt.fill({ text: `${text}${separator}${addition} `, mode: 'replace' })
+    }
+    const insert = async (name: string) => {
+      await bump($, [name], 'clicked')
+      await append(`/${name}`)
     }
     const pill = (label: string, color: string) => (
       <Text backgroundColor={color} color="white">{` ${label} `}</Text>
@@ -418,64 +475,102 @@ export const register: Register = (on, options) => {
           ))}
         </Box>
 
-        <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1}>
-          <Text bold color="claude">
-            {t().suggested}
-          </Text>
-          {prompt !== '' && picks.length > 0 && (
-            <Text dimColor>{t().forPrompt(prompt.length > 60 ? `${prompt.slice(0, 60)}...` : prompt)}</Text>
+        <Box gap={1} flexWrap="wrap">
+          {segment('tab-suggested', picks.length > 0 ? `${t().suggested} ${picks.length}` : t().suggested, view === 'suggested', () =>
+            setTab($, 'suggested'),
           )}
-          {status !== '' && <Text dimColor>{status}</Text>}
-          {picks.map((pick, rank) => (
-            <Box flexDirection="column" marginTop={1}>
+          {segment('tab-discover', finds.length > 0 ? `${t().discover} ${finds.length}` : t().discover, view === 'discover', () =>
+            setTab($, 'discover'),
+          )}
+          {segment('tab-top', t().topUsed, view === 'top', () => setTab($, 'top'))}
+        </Box>
+
+        {view === 'suggested' && (
+          <Box flexDirection="column" gap={1}>
+            <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1}>
+              {prompt !== '' && picks.length > 0 && (
+                <Text dimColor>{t().forPrompt(prompt.length > 60 ? `${prompt.slice(0, 60)}...` : prompt)}</Text>
+              )}
+              {status !== '' && <Text dimColor>{status}</Text>}
+              {picks.map((pick, rank) => (
+                <Box flexDirection="column" marginTop={1}>
+                  <Box gap={1}>
+                    <Text dimColor>{`${rank + 1}.`}</Text>
+                    <Button key={`use-${pick.name}`} plain label={`/${pick.name}`} onPress={() => insert(pick.name)} />
+                  </Box>
+                  <Box gap={1} alignItems="center">
+                    {Svg === undefined ? (
+                      <Text color={scoreColor(pick.score)}>{bar(pick.score)}</Text>
+                    ) : (
+                      <Svg source={gauge(pick.score)} alt={t().scoreAlt(pick.score)} width={GAUGE_WIDTH} height={GAUGE_HEIGHT} />
+                    )}
+                    <Text bold color={scoreColor(pick.score)}>{`${pick.score}`}</Text>
+                    {pill(tagLabel(pick.tag), tagColor(pick.tag))}
+                    {pick.isRule && pill(t().rule, RULE_COLOR)}
+                  </Box>
+                  <Text dimColor>{pick.why}</Text>
+                </Box>
+              ))}
+            </Box>
+            {rules !== '' && <Text dimColor>{rules}</Text>}
+            {cache !== '' && <Text dimColor>{cache}</Text>}
+          </Box>
+        )}
+
+        {view === 'discover' && (
+          <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1}>
+            {!isDiscoverOn && <Text dimColor>{t().discoverOff}</Text>}
+            {isDiscoverOn && query === '' && <Text dimColor>{t().discoverIdle}</Text>}
+            {isDiscoverOn && query !== '' && <Text dimColor>{t().discoverFor(query)}</Text>}
+            {isDiscoverOn && query !== '' && finds.length === 0 && <Text dimColor>{t().discoverNone}</Text>}
+            {finds.map((skill, rank) => {
+              const kind = tagOf({ name: skill.name, description: '' })
+              return (
+                <Box flexDirection="column" marginTop={1}>
+                  <Box gap={1}>
+                    <Text dimColor>{`${rank + 1}.`}</Text>
+                    <Button key={`add-${skill.name}`} plain label={skill.name} onPress={() => append(installCommand(skill))} />
+                    {pill(tagLabel(kind), tagColor(kind))}
+                  </Box>
+                  <Text dimColor>{`${skill.source}, ${t().installs(compact(skill.installs))}`}</Text>
+                </Box>
+              )
+            })}
+            {finds.length > 0 && (
+              <Box marginTop={1}>
+                <Text dimColor>{t().discoverHint}</Text>
+              </Box>
+            )}
+          </Box>
+        )}
+
+        {view === 'top' && (
+          <Box flexDirection="column" borderStyle="round" borderColor="subtle" paddingX={1}>
+            <Box gap={1}>
+              {segment('scope-project', project === '' ? t().project : project, scope !== 'all', () => setScope($, 'project'))}
+              {segment('scope-all', t().allProjects, scope === 'all', () => setScope($, 'all'))}
+            </Box>
+            {ranking.length === 0 && <Text dimColor>{scope === 'all' ? t().noHistory : t().noHistoryHere}</Text>}
+            {ranking.length > 0 && (
+              <Box flexWrap="wrap" columnGap={1} rowGap={0} marginTop={1}>
+                {filterPill('tag-all', t().all, ALL_COLOR, filter === '', () => update($, tagFilter, () => ''))}
+                {[...tagCounts].map(([tag, count]) =>
+                  filterPill(`tag-${tag}`, `${tagLabel(tag)} ${count}`, tagColor(tag), filter === tag, () =>
+                    update($, tagFilter, current => (current === tag ? '' : tag)),
+                  ),
+                )}
+              </Box>
+            )}
+            {shownTop.map((skill, rank) => (
               <Box gap={1}>
                 <Text dimColor>{`${rank + 1}.`}</Text>
-                <Button key={`use-${pick.name}`} plain label={`/${pick.name}`} onPress={() => insert(pick.name)} />
+                <Text bold color="claude">{String(skill.count).padStart(countWidth)}</Text>
+                <Text>{skill.name}</Text>
+                {pill(tagLabel(skill.tag), tagColor(skill.tag))}
               </Box>
-              <Box gap={1} alignItems="center">
-                {Svg === undefined ? (
-                  <Text color={scoreColor(pick.score)}>{bar(pick.score)}</Text>
-                ) : (
-                  <Svg source={gauge(pick.score)} alt={t().scoreAlt(pick.score)} width={GAUGE_WIDTH} height={GAUGE_HEIGHT} />
-                )}
-                <Text bold color={scoreColor(pick.score)}>{`${pick.score}`}</Text>
-                {pill(tagLabel(pick.tag), tagColor(pick.tag))}
-                {pick.isRule && pill(t().rule, RULE_COLOR)}
-              </Box>
-              <Text dimColor>{pick.why}</Text>
-            </Box>
-          ))}
-        </Box>
-
-        <Box flexDirection="column" borderStyle="round" borderColor="subtle" paddingX={1}>
-          <Text bold>{t().topUsed}</Text>
-          <Box gap={1}>
-            {segment('scope-project', project === '' ? t().project : project, scope !== 'all', () => setScope($, 'project'))}
-            {segment('scope-all', t().allProjects, scope === 'all', () => setScope($, 'all'))}
+            ))}
           </Box>
-          {ranking.length === 0 && <Text dimColor>{scope === 'all' ? t().noHistory : t().noHistoryHere}</Text>}
-          {ranking.length > 0 && (
-            <Box flexWrap="wrap" columnGap={1} rowGap={0} marginTop={1}>
-              {filterPill('tag-all', t().all, ALL_COLOR, filter === '', () => update($, tagFilter, () => ''))}
-              {[...tagCounts].map(([tag, count]) =>
-                filterPill(`tag-${tag}`, `${tagLabel(tag)} ${count}`, tagColor(tag), filter === tag, () =>
-                  update($, tagFilter, current => (current === tag ? '' : tag)),
-                ),
-              )}
-            </Box>
-          )}
-          {shownTop.map((skill, rank) => (
-            <Box gap={1}>
-              <Text dimColor>{`${rank + 1}.`}</Text>
-              <Text bold color="claude">{String(skill.count).padStart(countWidth)}</Text>
-              <Text>{skill.name}</Text>
-              {pill(tagLabel(skill.tag), tagColor(skill.tag))}
-            </Box>
-          ))}
-        </Box>
-
-        {rules !== '' && <Text dimColor>{rules}</Text>}
-        {cache !== '' && <Text dimColor>{cache}</Text>}
+        )}
       </Box>
     )
   })

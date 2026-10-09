@@ -1,12 +1,21 @@
 {
   "name": "skills-panel",
-  "version": "0.2.0",
-  "description": "A live pane that shows which skills are active, which ones fit your prompt (scored 1 to 10), and which ones you actually use.",
-  "author": { "name": "Ruben Haccoun", "url": "https://github.com/rubenhaccoun-cyber" },
+  "version": "0.3.0",
+  "description": "A live pane that shows which skills are active, which ones fit your prompt (scored 1 to 10), popular skills you have not installed yet, and which ones you actually use.",
+  "author": {
+    "name": "Ruben Haccoun",
+    "url": "https://github.com/rubenhaccoun-cyber"
+  },
   "homepage": "https://github.com/rubenhaccoun-cyber/skills-panel",
   "repository": "https://github.com/rubenhaccoun-cyber/skills-panel",
   "license": "MIT",
-  "keywords": ["skills", "mod", "pane", "recommendations", "productivity"],
+  "keywords": [
+    "skills",
+    "mod",
+    "pane",
+    "recommendations",
+    "productivity"
+  ],
   "types": "./types/index.d.ts",
   "userConfig": {
     "language": {
@@ -14,7 +23,10 @@
       "title": "Language",
       "description": "Language of the pane and of the reasons given for each suggestion.",
       "default": "en",
-      "options": ["en", "fr"]
+      "options": [
+        "en",
+        "fr"
+      ]
     },
     "contextMinScore": {
       "type": "number",
@@ -32,6 +44,12 @@
       "type": "boolean",
       "title": "Share suggestions with Claude",
       "description": "Off: the pane still shows suggestions, but Claude does not receive them.",
+      "default": true
+    },
+    "discover": {
+      "type": "boolean",
+      "title": "Discover skills you have not installed",
+      "description": "On: after each prompt, 2 to 4 keywords (never the prompt) are sent to skills.sh to list popular skills you do not have yet. Off: no request leaves your machine for this.",
       "default": true
     }
   }
